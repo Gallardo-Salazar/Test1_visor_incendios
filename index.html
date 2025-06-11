@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Visor UAV Incendios</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet Draw -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+  <!-- Turf.js -->
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <style>
+    html, body, #map {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+    }
+
+    #header {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1001;
+      font-family: sans-serif;
+    }
+
+    .title-container {
+      background: rgba(255, 255, 255, 0.85);
+      padding: 10px 24px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: bold;
+      color: #333;
+      white-space: nowrap;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+      transition: transform 0.2s, background 0.3s;
+    }
+
+    .title-container:hover {
+      transform: scale(1.02);
+      background: rgba(255, 255, 255, 0.95);
+    }
+
+    #logos {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      z-index: 1000;
+    }
+
+    #logos a {
+      margin-top: 5px;
+    }
+
+    .logo {
+      height: 50px;
+      filter: drop-shadow(0 0 2px #00000088);
+      transition: transform 0.2s;
+    }
+
+    .logo:hover {
+      transform: scale(1.1);
+    }
+
+    .control-btn {
+      position: absolute;
+      left: 10px;
+      z-index: 1000;
+      padding: 4px 8px;
+      background: #004d40;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: sans-serif;
+      transition: background 0.3s;
+    }
+
+    .control-btn:hover {
+      background: #00695c;
+    }
+
+    #exportBtn { bottom: 70px; }
+    #importGeojson { bottom: 35px; }
+
+    .rename-btn {
+      background: none;
+      border: none;
+      color: #007bff;
+      cursor: pointer;
+      margin-left: 5px;
+      font-size: 14px;
+    }
+
+    .leaflet-editing-icon {
+      width: 8px !important;
+      height: 8px !important;
+      border-radius: 50%;
+      background: white;
+      border: 1px solid black;
+    }
+
+    .leaflet-control-attribution {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Título centrado -->
+<div id="header">
+  <div class="title-container">
+    Visor geoespacial para el análisis de superficies quemadas mediante imágenes UAV
+  </div>
+</div>
+
+<!-- Logos en esquina inferior derecha -->
+<div id="logos">
+  <a href="https://www.chapingo.mx" target="_blank">
+    <img src="logo_chapingo.png" class="logo" alt="Chapingo">
+  </a>
+  <a href="https://www.ugto.mx" target="_blank">
+    <img src="logo_ugto.png" class="logo" alt="UGTO">
+  </a>
+</div>
+
+<div id="map"></div>
+<button id="exportBtn" class="control-btn">⬇ Exportar GeoJSON</button>
+<input type="file" id="importGeojson" class="control-btn" accept=".geojson,.json" title="Importar GeoJSON">
+
+<script>
+  const orthoBounds = L.latLngBounds([21.0621, -101.2870], [21.0723, -101.2814]);
+  const map = L.map('map', {
+    center: orthoBounds.getCenter(),
+    zoom: 18,
+    minZoom: 15,
+    maxZoom: 22
+  });
+
+  const esri = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '', maxZoom: 22 }
+  ).addTo(map);
+
+  const OrthoLayer = L.GridLayer.extend({
+    createTile: function (coords) {
+      const z = coords.z;
+      const x = coords.x;
+      const yInverted = Math.pow(2, z) - coords.y - 1;
+      const tile = document.createElement('img');
+
+      const tileSize = 256;
+      const nwPoint = coords.scaleBy(L.point(tileSize, tileSize));
+      const sePoint = nwPoint.add([tileSize, tileSize]);
+      const nw = map.unproject(nwPoint, z);
+      const se = map.unproject(sePoint, z);
+      const tileBounds = L.latLngBounds(nw, se);
+
+      tile.src = orthoBounds.intersects(tileBounds) ? `${z}/${x}/${yInverted}.png` : '';
+      tile.alt = '';
+      tile.onerror = () => tile.style.display = 'none';
+      tile.setAttribute('crossorigin', '');
+      tile.style.width = '256px';
+      tile.style.height = '256px';
+      return tile;
+    }
+  });
+
+  const ortomosaico = new OrthoLayer().addTo(map);
+  const overlayMaps = { "Ortomosaico": ortomosaico };
+  const baseMaps = { "Esri Satélite": esri };
+  const layerControl = L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
+
+  let featureCounter = 1;
+  const drawnFeatures = new L.FeatureGroup();
+  map.addLayer(drawnFeatures);
+
+  const drawControl = new L.Control.Draw({
+    draw: {
+      polygon: { allowIntersection: false, shapeOptions: { color: '#ff0000' } },
+      polyline: { shapeOptions: { color: '#0000ff' } },
+      marker: true,
+      rectangle: false,
+      circle: false,
+      circlemarker: false
+    },
+    edit: { featureGroup: drawnFeatures, remove: true }
+  });
+  map.addControl(drawControl);
+
+  function updateLayerControlButtons() {
+    document.querySelectorAll('.leaflet-control-layers-overlays label span').forEach(label => {
+      if (!label.querySelector('.rename-btn')) {
+        const btn = document.createElement('button');
+        btn.className = 'rename-btn';
+        btn.textContent = '✎';
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const oldName = label.childNodes[0].nodeValue.trim();
+          const newName = prompt("Nuevo nombre de la capa:", oldName);
+          if (newName && newName !== oldName) {
+            const entry = Object.entries(overlayMaps).find(([name]) => name === oldName);
+            if (entry) {
+              const [oldKey, layerObj] = entry;
+              overlayMaps[newName] = layerObj;
+              delete overlayMaps[oldKey];
+              layerControl.removeLayer(layerObj);
+              layerControl.addOverlay(layerObj, newName);
+            }
+          }
+        };
+        label.appendChild(btn);
+      }
+    });
+  }
+
+  map.on(L.Draw.Event.CREATED, function (e) {
+    const layer = e.layer;
+    const geojson = layer.toGeoJSON();
+    const type = geojson.geometry.type;
+    let popupText = '', layerName = '';
+
+    if (type === 'Polygon') {
+      popupText = `Área: ${(turf.area(geojson) / 10000).toFixed(2)} ha`;
+      layerName = `Polígono ${featureCounter++}`;
+    } else if (type === 'LineString') {
+      popupText = `Longitud: ${(turf.length(geojson, { units: 'kilometers' }) * 1000).toFixed(2)} m`;
+      layerName = `Línea ${featureCounter++}`;
+    } else if (type === 'Point') {
+      const [lng, lat] = geojson.geometry.coordinates;
+      popupText = `Coordenadas:<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}`;
+      layerName = `Punto ${featureCounter++}`;
+    }
+
+    layer.bindPopup(popupText).openPopup();
+    const group = L.layerGroup([layer]).addTo(map);
+    overlayMaps[layerName] = group;
+    layerControl.addOverlay(group, layerName);
+    drawnFeatures.addLayer(layer);
+    updateLayerControlButtons();
+  });
+
+  map.on('draw:edited', function (e) {
+    e.layers.eachLayer(function (layer) {
+      const geojson = layer.toGeoJSON();
+      let popupText = '';
+
+      if (geojson.geometry.type === 'Polygon') {
+        popupText = `Área: ${(turf.area(geojson) / 10000).toFixed(2)} ha`;
+      } else if (geojson.geometry.type === 'LineString') {
+        popupText = `Longitud: ${(turf.length(geojson, { units: 'kilometers' }) * 1000).toFixed(2)} m`;
+      } else if (geojson.geometry.type === 'Point') {
+        const [lng, lat] = geojson.geometry.coordinates;
+        popupText = `Coordenadas:<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}`;
+      }
+
+      layer.bindPopup(popupText);
+    });
+  });
+
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    if (drawnFeatures.getLayers().length === 0) {
+      alert("No hay geometrías para exportar.");
+      return;
+    }
+    const geojson = drawnFeatures.toGeoJSON();
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], {
+      type: "application/vnd.geo+json"
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "geometrias.geojson";
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('importGeojson').addEventListener('change', function (e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function (event) {
+      try {
+        const geojsonData = JSON.parse(event.target.result);
+        const layer = L.geoJSON(geojsonData, {
+          onEachFeature: function (feature, l) {
+            const type = feature.geometry.type;
+            let popupText = '';
+
+            if (type === 'Polygon') {
+              popupText = `Área: ${(turf.area(feature) / 10000).toFixed(2)} ha`;
+            } else if (type === 'LineString') {
+              popupText = `Longitud: ${(turf.length(feature, { units: 'kilometers' }) * 1000).toFixed(2)} m`;
+            } else if (type === 'Point') {
+              const [lng, lat] = feature.geometry.coordinates;
+              popupText = `Coordenadas:<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}`;
+            }
+
+            l.bindPopup(popupText);
+            drawnFeatures.addLayer(l);
+          },
+          pointToLayer: (feature, latlng) =>
+            L.circleMarker(latlng, {
+              radius: 6, fillColor: "#ff7800", color: "#000",
+              weight: 1, opacity: 1, fillOpacity: 0.8
+            }),
+          style: (feature) => {
+            const type = feature.geometry.type;
+            if (type === 'Polygon') return { color: '#ff0000' };
+            if (type === 'LineString') return { color: '#0000ff' };
+          }
+        }).addTo(map);
+
+        const name = `Importado ${Date.now()}`;
+        overlayMaps[name] = layer;
+        layerControl.addOverlay(layer, name);
+        map.fitBounds(layer.getBounds());
+        updateLayerControlButtons();
+      } catch (err) {
+        alert("Error al leer el archivo GeoJSON.");
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  setTimeout(updateLayerControlButtons, 800);
+</script>
+</body>
+</html>
